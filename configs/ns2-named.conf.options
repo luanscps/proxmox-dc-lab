@@ -1,0 +1,35 @@
+// Bind9 NS2 — /etc/bind/named.conf.options
+
+options {
+    directory "/var/cache/bind";
+
+    // Slave não precisa de recursão
+    recursion no;
+
+    // Escuta apenas na interface da VLAN 410
+    listen-on { 10.41.10.11; 127.0.0.1; };
+    listen-on-v6 { none; };
+
+    // Apenas redes internas podem consultar
+    allow-query {
+        10.41.10.0/24;
+        10.42.20.0/24;
+        10.43.30.0/24;
+        10.44.40.0/24;
+        10.45.0.0/24;
+        10.47.0.0/24;
+        127.0.0.1;
+    };
+
+    // NS2 não transfere zonas para ninguém
+    allow-transfer { none; };
+
+    // Desabilitar DNSSEC (Samba4 não é compatível)
+    dnssec-validation no;
+
+    // Sem forwarders — slave puro
+    forwarders { };
+
+    // Tempo de retry de transferência
+    transfer-format many-answers;
+};

@@ -1,0 +1,29 @@
+// Bind9 NS2 — /etc/bind/named.conf.local
+// Zonas slave replicadas do DC1 Zentyal/Samba4 (10.41.10.10)
+
+// Zona forward principal
+zone "servidor.lan" {
+    type slave;
+    masters { 10.41.10.10; };
+    file "/var/cache/bind/db.servidor.lan";
+    allow-notify { 10.41.10.10; };
+    allow-query { any; };
+};
+
+// Zona reversa
+zone "41.10.in-addr.arpa" {
+    type slave;
+    masters { 10.41.10.10; };
+    file "/var/cache/bind/db.41.10.rev";
+    allow-notify { 10.41.10.10; };
+    allow-query { any; };
+};
+
+// SRV records do AD (Windows precisa desta zona)
+zone "_msdcs.servidor.lan" {
+    type slave;
+    masters { 10.41.10.10; };
+    file "/var/cache/bind/db._msdcs.servidor.lan";
+    allow-notify { 10.41.10.10; };
+    allow-query { any; };
+};
