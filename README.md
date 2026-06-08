@@ -30,29 +30,130 @@ O objetivo é simular um ambiente de produção real para estudo, homelab e vali
 
 ## 🗺️ Topologia da Rede
 
-```
-                    INTERNET
-                       │
-              [MikroTik CHR R2]
-          RouterOS 7.20 — VM 102 no Proxmox
-           bridge-main / VLAN Trunk (vmbr2)
-                       │
-        ┌──────────────┼──────────────┐
-        │              │              │
-   VLAN 410       VLAN 420/430    VLAN 440
-   SERVERS         DEV/TEST         PROD
-  10.41.10.0/24
-        │
-  ┌─────┴──────────────────────────────────┐
-  │                   │                    │
-[VM: DC1 / NS1]   [VM: NS2]         [LXC: Technitium]
-Zentyal Server    Technitium DNS    DNS primário DHCP
-10.41.10.10       10.41.10.11       10.41.10.2
-ns.servidor.lan   ns2.servidor.lan  (forwarder/bloqueio)
-• AD / LDAP       • Zona slave      • Zone forward → DC1
-• Kerberos        • DNS Secundário  • Filtro DNS
-• DNS Autoritativo
-• NTP
+```mermaid
+flowchart TD
+
+    %% ══════════════════════════════════════════
+    %% ZONA: UPLINK / WAN
+    %% ══════════════════════════════════════════
+    subgraph UPLINK ["🌐 UPLINK / WAN"]
+        INTERNET(["Internet"])
+        R1["R1 · RB750Gr3\nAS 64511 · 10.80.80.1"]
+    end
+
+    %% ══════════════════════════════════════════
+    %% ZONA: CHR R2 — CORE
+    %% ══════════════════════════════════════════
+    subgraph CHR ["🖥️ MikroTik CHR R2 — RouterOS 7.20.2  |  AS 64512  |  lo 10.90.90.2"]
+        direction TB
+        BRIDGE["bridge-main\nvlan-filtering=yes · RSTP · pvid=801"]
+        ETH1["ether1-UPSTREAM-RB750\nVLAN 800 tagged"]
+        ETH2["ether2-VM-TRUNK"]
+        ETH3["ether3-VM-TRUNK"]
+        ETH4["ether4-VM-TRUNK"]
+        ETH6["ether6-UPSTREAM-ether5"]
+    end
+
+    %% ══════════════════════════════════════════
+    %% ZONA: VPN PRIVADA — WireGuard mascarado
+    %% ══════════════════════════════════════════
+    subgraph VPN_ZONE ["🔒 VPN Privada — Túnel Criptografado  |  PCC Load Balance por conexão"]
+        WG606["VPN-PEER-A\nWireGuard · :46993\nTabela de rota: to-wg-606"]
+        WG607["VPN-PEER-B\nWireGuard · :46994\nTabela de rota: to-wg-607"]
+        VPN_EXIT(["VPN Exit Node\nUDP :51820\nMSS clamp: 1380"])
+    end
+
+    %% ══════════════════════════════════════════
+    %% ZONA: VLAN 410 — SERVERS
+    %% ══════════════════════════════════════════
+    subgraph V410_ZONE ["⚙️ VLAN 410 — SERVERS  |  10.41.10.0/24  |  GW 10.41.10.1"]
+        direction TB
+
+        subgraph DNS_ZONE ["🧩 DNS / Directory Services"]
+            ZENTYAL["VM: DC1 / NS1 — Zentyal Server\nAD · LDAP · Kerberos · DNS · NTP\n10.41.10.10/24\nhostname: ns.servidor.lan"]
+            NS2["VM: NS2 — Technitium DNS\nDNS Secundário · Zona Slave\n10.41.10.11/24\nhostname: ns1.servidor.lan"]
+            TECH_DNS["LXC: Technitium DNS\nDNS primário da rede · Forwarder · Cache\n10.41.10.2/24\nhostname: ns2.servidor.lan"]
+        end
+
+        subgraph MON_ZONE ["📊 Monitoring Stack (Containers)"]
+            PROM["Prometheus\n10.41.10.130 · :9090\n/disk1/prometheus"]
+            GRAF["Grafana\n10.41.10.130 · :3000\n/disk1/grafana"]
+            SNMPEXP["SNMP Exporter\n10.41.10.130 · :9116\n/disk1/snmp-exporter"]
+        end
+
+        subgraph AUTH_ZONE ["🔑 Autenticação / NAC"]
+            RADIUS_C["RADIUS / PacketFence\n10.41.10.120 · :1812 UDP"]
+            ADGUARD["AdGuard DNS Forwarder\n10.41.10.130 · :53"]
+        end
+    end
+
+    %% ══════════════════════════════════════════
+    %% ZONA: VLANs DE WORKLOAD
+    %% ══════════════════════════════════════════
+    subgraph VLANS_APP ["📦 VLANs de Workload"]
+        V420["VLAN 420 · DEV\n10.42.20.0/24 · GW .20.1\nDHCP .10–.200 · DNS: 10.41.10.130"]
+        V430["VLAN 430 · TEST\n10.43.30.0/24 · GW .30.1\nDHCP .10–.200 · DNS: 10.41.10.130"]
+        V440["VLAN 440 · PROD\n10.44.40.0/24 · GW .40.1\nDHCP .10–.200 · DNS: 10.41.10.130"]
+        V450["VLAN 450 · VPN-ROUTING\n10.45.0.0/24 · GW .0.1\nDHCP .10–.254 · egress → VPN-PEER-A/B"]
+        V460["VLAN 460 · GUEST WiFi\n10.46.0.0/24 · GW .0.1\n⚠️ disabled"]
+    end
+
+    %% ══════════════════════════════════════════
+    %% ZONA: COSMOS NODES — VLAN 440 PROD
+    %% ══════════════════════════════════════════
+    subgraph COSMOS_ZONE ["⛓️ Cosmos Nodes — VLAN 440 PROD"]
+        VALIDATOR["Validator Node\n10.44.40.199\np2p: 26656/tcp\nDHCP static lease"]
+        SENTRY1["Sentry Node 1\n10.44.40.198\np2p: 26656/tcp\nDHCP static lease"]
+        SENTRY2["Sentry Node 2\n10.44.40.197\np2p: 26656/tcp\nDHCP static lease"]
+    end
+
+    %% ══════════════════════════════════════════
+    %% ZONA: NAC — PacketFence Inline
+    %% ══════════════════════════════════════════
+    subgraph NAC_ZONE ["🛡️ NAC — PacketFence Inline"]
+        V470["VLAN 470 · NAC-MGMT\n10.47.0.0/24 · GW .0.1\nDHCP .10–.200 (lease 12h)"]
+        V471["VLAN 471 · NAC-REG\n10.47.1.0/24\n⚠️ DHCP disabled\nInline GW: 10.47.1.130"]
+        V472["VLAN 472 · NAC-INET\n10.47.2.0/24 · GW .2.1\nDHCP .10–.200 (1h)"]
+        V473["VLAN 473 · NAC-LOCAL\n10.47.3.0/24\n⚠️ DHCP disabled\nInline GW: 10.47.3.130"]
+        PF["PacketFence\nInline GW: 10.47.1.130 / 10.47.3.130\nRADIUS → 10.41.10.120:1812"]
+    end
+
+    %% ══════════════════════════════════════════
+    %% CONEXÕES
+    %% ══════════════════════════════════════════
+
+    INTERNET -->|"eBGP AS64511↔64512\n10.80.80.0/30"| R1
+    R1 -->|"VLAN 800 · ether1→ether6\n10.80.80.2/30"| ETH1
+
+    ETH1 & ETH2 & ETH3 & ETH4 & ETH6 --- BRIDGE
+
+    BRIDGE -->|"VLAN 410 · ether2/3/4 tagged"| V410_ZONE
+    BRIDGE -->|"VLAN 420 · ether2/3/4 tagged"| V420
+    BRIDGE -->|"VLAN 430 · ether2/3/4 tagged"| V430
+    BRIDGE -->|"VLAN 440 · ether2/3/4 tagged"| V440
+    BRIDGE -->|"VLAN 450 · ether2/3/4 tagged"| V450
+    BRIDGE -.->|"VLAN 460 · untagged ether5\n⚠️ disabled"| V460
+    BRIDGE -->|"VLANs 470–473 · ether2/3/4+ether6"| NAC_ZONE
+
+    V450 -->|"PCC mark-routing\nto-wg-606"| WG606
+    V450 -.->|"PCC mark-routing\nto-wg-607"| WG607
+    WG606 & WG607 -->|"UDP :51820 + NAT masquerade"| VPN_EXIT
+    VPN_EXIT -->|"saída encriptada"| INTERNET
+
+    V440 --- COSMOS_ZONE
+    SENTRY1 & SENTRY2 <-->|"p2p 26656/tcp"| VALIDATOR
+    SENTRY1 & SENTRY2 -->|"p2p 26656 · inbound WAN\nfirewall: cosmos-sentries"| INTERNET
+
+    V471 -->|"inline GW"| PF
+    V473 -->|"inline GW"| PF
+    PF -->|"RADIUS auth"| RADIUS_C
+
+    PROM -->|"scrape SNMP"| SNMPEXP
+    GRAF -->|"datasource :9090"| PROM
+
+    ZENTYAL <-->|"AD sync / Zona Slave"| NS2
+    ZENTYAL <-->|"Zone Forward"| TECH_DNS
+    TECH_DNS & NS2 -->|"upstream forwarder"| ADGUARD
 ```
 
 ---
